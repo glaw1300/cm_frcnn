@@ -1,0 +1,31 @@
+# where to output data
+OUTPUT_DIR: output
+
+# datasets
+DATASETS:
+  TRAIN: ("dimac_train",)
+  TEST: ("dimac_valid",) # test with validate dataset b/c does iterative tests
+
+# training schedule (by defualt has multistep warmup)
+# https://arxiv.org/pdf/1811.08883.pdf
+SOLVER:
+  BASE_LR: .02 # starting learning rate
+  MAX_ITER: 5 # number of epochs
+  IMS_PER_BATCH: 4
+  #STEPS: (5000, 7500) # decrease lr iteratively
+
+TEST:
+  EVAL_PERIOD: 1 # when to run evaluation
+
+# iteration detals
+MODEL:
+  ROI_HEADS:
+      BATCH_SIZE_PER_IMAGE: 128
+      SCORE_THRESH_TEST: .5 # threshold for score
+  DEVICE: cpu # device to run on
+  WEIGHTS: detectron2://ImageNetPretrained/MSRA/R-50.pkl
+
+DATALOADER:
+    NUM_WORKERS: 0 # number of cores
+
+VERSION: 2
