@@ -11,11 +11,11 @@ def plot_val_with_total_loss(output_dir):
     metrics = load_json_arr(os.path.join(output_dir, "metrics.json"))
 
     plt.plot(
-        [x['iteration'] for x in experiment_metrics],
-        [x['total_loss'] for x in experiment_metrics])
+        [x['iteration'] for x in metrics],
+        [x['total_loss'] for x in metrics])
     plt.plot(
-        [x['iteration'] for x in experiment_metrics if 'validation_loss' in x],
-        [x['validation_loss'] for x in experiment_metrics if 'validation_loss' in x])
+        [x['iteration'] for x in metrics if 'validation_loss' in x],
+        [x['validation_loss'] for x in metrics if 'validation_loss' in x])
     plt.legend(['total_loss', 'validation_loss'], loc='upper left')
     plt.show()
 

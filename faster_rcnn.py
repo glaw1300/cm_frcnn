@@ -8,7 +8,6 @@ from glob import glob
 import pandas as pd
 import cv2
 from PIL import Image
-from confusion import get_confusion_matrix
 import logging
 import matplotlib.pyplot as plt
 from trainer import Trainer
@@ -16,18 +15,26 @@ import argparse
 from utils import *
 import plotter
 from tqdm import tqdm
+from collections import OrderedDict
+from matplotlib import patches
+from matplotlib.widgets import Slider
+import json
+import sys
+#from predictor import Predictor
 
 # import detectron2 utilities
 from detectron2 import model_zoo
-from detectron2.engine import DefaultPredictor
 from detectron2.config import get_cfg
 from detectron2.utils.visualizer import Visualizer, ColorMode
-from detectron2.data import MetadataCatalog, DatasetCatalog
+from detectron2.data import MetadataCatalog, DatasetCatalog, build_detection_test_loader
 import detectron2.data.datasets
 from detectron2.structures import BoxMode
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.utils.visualizer import ColorMode
 from detectron2.engine import DefaultPredictor
+from detectron2.evaluation import COCOEvaluator, inference_on_dataset, print_csv_format
+from detectron2.modeling import build_model
+
 
 
 """
@@ -42,13 +49,9 @@ To specify the location of these files, simply change the constants below this c
 """
 
 class CNN():
-    LABELS = "labels.txt" # location of labels file (format each line is label)
-    EXCLUDE = ["well", "processing"] # make empty list if none
-    IMG_PATH = "../DIMAC_jpeg/" # where images are located (WITH trailing /)
-    OUTPUT_DIR = "output" # directory where checkpoints should be stored and loaded from
 
     @initializer # wrapper that unpacks each kwarg into self.<variable name>
-    def __init__(self, label_path:str="labels.txt", exclude:list=["well", "processing"], resume:bool=False, config_path:str="cfg.yaml", model_config:str="COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml", splits:dict={"train":.7, "valid":.15, "test":.15}, dataname:str="dimac_", img_path:str="../DIMAC_jpeg/", csv_path:str="exports/csv/", excel_path:str="fnames.xlsx"):
+    def __init__(self, label_path:str="labels.txt", exclude:list=["well", "processing"], resume:bool=True, config_path:str="cfg.yaml", model_config:str="COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml", splits:dict={"train":.7, "valid":.15, "test":.15}, dataname:str="dimac_", img_path:str="../DIMAC_jpeg/", csv_path:str="exports/csv/", excel_path:str="fnames.xlsx", cross_nms:list=["pumpjack", "tank", "compressor", "flare"], json_path:str="exports"):
         # config
         self._cfg = None
         # label dict of form label:id
@@ -162,6 +165,13 @@ class CNN():
             print("Loading labels")
             self.load_labels()
 
+        # if resuming with json data, do that
+        if self.json_path is not None:
+            print("Loading data from JSON")
+            self._load_json(["data"])
+            self._unloaded.remove("dataset")
+            return
+
         csvs = glob(self.csv_path + "*.csv")
         # read in each annotation in each csv
         # CSV FORMAT: label,xmin,ymin,box_width,box_height,img_name,img_width,img_height
@@ -259,7 +269,15 @@ class CNN():
         self._data = np.array(final)
         self._unloaded.remove("dataset")
 
+
     def load_splits(self):
+        # if resuming with json data, do that
+        if self.json_path is not None:
+            print("Loading splits from JSON")
+            self._load_json(self.splits.keys())
+            self._unloaded.remove("splits")
+            return
+
         # make sure splits make sense
         assert sum(self.splits.values()) == 1, "Splits do not add to one"
 
@@ -279,6 +297,21 @@ class CNN():
             self._splits_data[stage] = chunk
 
         self._unloaded.remove("splits")
+
+    def _load_json(self, srcs):
+        # load each source
+        for src in srcs:
+            # get list for storage
+            if src == "data":
+                l = self._data
+            else:
+                l = self._splits_data[src]
+
+            # load data
+            with open(os.path.join(self.json_path, src+".json"), "r") as f:
+                for line in f:
+                    l.append(json.loads(line.strip()))
+
 
     def register_datasets(self):
         # ensure have labels and splits
@@ -316,10 +349,29 @@ class CNN():
 
         return True
 
+    def save_dataset(self, path=None):
+        self._assert_loaded("dataset")
+        #TODO: this is gross
+        path = path or self.json_path or "./"
+        self._save_json_list(self._data, os.path.join(path, "data.json"))
+
+    def save_splits(self, path=None):
+        self._assert_loaded("splits")
+        #TODO: this is gross, make outputdir attr
+        path = path or self.json_path or "./"
+        for key in self.splits.keys():
+            self._save_json_list(self._splits_data[key], os.path.join(path, key+".json"))
+
+    def _save_json_list(self, data, file):
+        with open(file, "w") as f:
+            for l in data:
+                json.dump(l, f)
+                f.write("\n")
+
     """
     model related methods (training, testing)
     """
-    def train_model(self, plot=True):
+    def train_model(self, plot=False):
         # assert modules loaded
         self._assert_loaded("cfg")
         self._assert_loaded("labels")
@@ -380,7 +432,7 @@ class CNN():
         # assert modules loaded
         self._assert_loaded("cfg")
 
-        predictor = DefaultPredictor(self._cfg)
+        predictor = DefaultPredictor(self._cfg)#Predictor(self._cfg, self.cross_nms)
         preds = predictor(img)
 
         v = Visualizer(img[:,:,::-1], scale=0.5, metadata=metadata, instance_mode=ColorMode.SEGMENTATION)
@@ -397,7 +449,7 @@ class CNN():
     def _assert_loaded(self, src):
         assert src not in self._unloaded, f"{src} not loaded, run 'load_{src}()' to load"
 
-    def run_confusion_matrix(self, stage, threshold=None, iou_threshold=.5, plot=True, verbose=False, hypervisualize=False, slices=None):
+    def run_confusion_matrix(self, stage, nms_thresh=.25, threshold=None, iou_threshold=.25, plot=True, verbose=False, hypervisualize=False, slices=None):
         """
         if hypervisualize is True, verbose is automatically true
         """
@@ -407,9 +459,12 @@ class CNN():
         self._assert_loaded("dataset")
         self._assert_loaded("splits")
 
+        # default to .5, decrease in our case because overlappign infrastructure won't happen
+        self._cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = nms_thresh
+
         if threshold is not None:
-            cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = threshold # set a custom testing threshold
-        predictor = DefaultPredictor(self._cfg)
+            self._cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = threshold # set a custom testing threshold
+        predictor = DefaultPredictor(self._cfg)#Predictor(self._cfg, self.cross_nms)
 
         # PYTHON 3.7 dict keys are in insertion order !!!
         labels = list(self._labels.keys())
@@ -436,6 +491,7 @@ class CNN():
             # show prediction and true
             if verbose or hypervisualize:
                 # prediction for this attempt
+                print(d["file_name"])
                 pprint_cm(cm_tmp, row_labels, col_labels)
                 if hypervisualize:
                     # show predictions
@@ -464,10 +520,39 @@ class CNN():
         # total number of predictions is all items except the last column b/c is missed detection
         return cm, cm[:, :-1].sum()
 
+    def do_test(self, stage, model_name = "model_final.pth"):
+        # assert modules loaded
+        self._assert_loaded("cfg")
+        self._assert_loaded("labels")
+        self._assert_loaded("dataset")
+        self._assert_loaded("splits")
+
+        datasets = {
+                    "test" : self._cfg.DATASETS.TEST,
+                    "train": self._cfg.DATASETS.TRAIN}
+        model = build_model(self._cfg)
+        DetectionCheckpointer(model).load(os.path.join(self._cfg.OUTPUT_DIR, model_name))
+
+        results = OrderedDict()
+        for dataset_name in datasets[stage]:
+            data_loader = build_detection_test_loader(self._cfg, dataset_name)
+            evaluator = COCOEvaluator(dataset_name, tasks=("bbox",), distributed=True, output_dir=self._cfg.OUTPUT_DIR)
+            results_i = inference_on_dataset(model, data_loader, evaluator)
+            results[dataset_name] = results_i
+
+            print("Evaluation results for {} in csv format:".format(dataset_name))
+            print_csv_format(results_i)
+
+        if len(results) == 1:
+            results = list(results.values())[0]
+
+        return results
+
     """
     plotting tools (with plotter.py)
     """
     def plot_confusion_matrix(self, iou, row=[], col=[]):
+
         fig, ax = plt.subplots()
         im, cbar = plotter.heatmap(self._cm, row, col, ax=ax, cmap="YlOrRd", title=f"Confusion matrix total, IOU={iou}")
         texts = plotter.annotate_heatmap(im, valfmt="{x:.0f}")
@@ -484,12 +569,115 @@ class CNN():
         fig1.savefig(self._cfg.OUTPUT_DIR+"/cm_normalized.png", dpi=100)
         plt.show()
 
+    def adjust_bboxes(self, verbose=True, data="dataset", save=False):
+        """
+        Overwrites self._data by default, can specify which split
+        """
+        self._assert_loaded("dataset")
+
+        if data == "dataset":
+            dataset = self._data
+        else:
+            self._assert_loaded("splits")
+            dataset = self._splits_data[data]
+
+        # control boxes with arrows
+        def _on_press(event):
+            sys.stdout.flush()
+            # increment on keypress
+            if event.key == "left":
+                x_slider.set_val(max(x_slider.val - 1, x_slider.valmin))
+            elif event.key == "right":
+                x_slider.set_val(min(x_slider.val + 1, x_slider.valmax))
+            elif event.key == "up":
+                y_slider.set_val(max(y_slider.val - 1, y_slider.valmin))
+            elif event.key == "down":
+                y_slider.set_val(min(y_slider.val + 1, y_slider.valmax))
+            # shift increases by 5
+            if event.key == "shift+left":
+                x_slider.set_val(max(x_slider.val - 5, x_slider.valmin))
+            elif event.key == "shift+right":
+                x_slider.set_val(min(x_slider.val + 5, x_slider.valmax))
+            elif event.key == "shift+up":
+                y_slider.set_val(max(y_slider.val - 5, y_slider.valmin))
+            elif event.key == "shift+down":
+                y_slider.set_val(min(y_slider.val + 5, y_slider.valmax))
+            # terminate on ctrl+c
+            elif event.key == "ctrl+c":
+                print("CTRL+C: ABORTING")
+                sys.exit(0)
+
+        # update functions for slider
+        def _update_y(val):
+            for r, coords in zip(rects, og_coords):
+                r.set_y(y_slider.val + coords[1])
+
+        def _update_x(val):
+            for r, coords in zip(rects, og_coords):
+                r.set_x(x_slider.val + coords[0])
+
+        for d in dataset[:3]:
+            # setup subplots
+            fig, ax = plt.subplots()
+            fig.subplots_adjust(left=0.25, bottom=0.25)
+
+            # add sliders
+            x_slider_ax  = fig.add_axes([0.25, 0.15, 0.65, 0.03])
+            x_slider = Slider(x_slider_ax, 'Horiz', -30, 30, valstep=1, valinit=0)
+
+            # Draw another slider
+            y_slider_ax  = fig.add_axes([0.25, 0.1, 0.65, 0.03])
+            y_slider = Slider(y_slider_ax, 'Vert', -30, 30, valstep=1, valinit=0)
+
+            # set sliders
+            x_slider.on_changed(_update_x)
+            y_slider.on_changed(_update_y)
+
+            # make all rectangles
+            rects = []
+            og_coords = []
+            for annot in d["annotations"]:
+                x, y, w, h = annot["bbox"]
+                rects.append(patches.Rectangle((x,y),w,h, edgecolor='r', facecolor="none"))
+                og_coords.append((x,y))
+
+            # show rectangle
+            for r in rects:
+                ax.add_patch(r)
+
+            i = plt.imread(d["file_name"])
+            ax.imshow(i)
+
+            fig.canvas.mpl_connect('key_press_event', _on_press)
+            print("Press (q) to close")
+            plt.show()
+
+            # show final changes if verbose
+            if verbose:
+                for r, xy in zip(rects, og_coords):
+                    print(f"x,y: {xy[0]},{xy[1]} ---> {r.get_x()},{r.get_y()}")
+
+            # update dataset
+            for i, r in enumerate(rects):
+                d["annotations"][i]["bbox"][0] = r.get_x()
+                d["annotations"][i]["bbox"][1] = r.get_y()
+
+        # if save datasets, save datasets
+        if save:
+            if data == "dataset":
+                self.save_dataset()
+            else:
+                #TODO: probably should just save one
+                self.save_splits()
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-t", "--train", help="Train the network", action="store_true")
 parser.add_argument("-c", "--confusion", help="Plot confusion matrix on test set", action="store_true")
 parser.add_argument("-v", "--visualize", help="Visualize outputs. For train, this means visualizing sample training data.", type=int)
 parser.add_argument("-p", "--predict", type=str, help="Run model for one image, specify path as argument.")
+parser.add_argument("-e", "--eval_all", help="Run COCOEvaluator on all 3 segments of datasets", action="store_true")
+parser.add_argument("--edit", help="Adjust bounding boxes of dataset manually", action="store_true")
 args = parser.parse_args()
 
 if __name__ == "__main__":
@@ -506,6 +694,14 @@ if __name__ == "__main__":
         c.train_model()
     if args.confusion:
         c.setup_model()
-        c.run_confusion_matrix("valid", slices=range(3,6), hypervisualize=True)
+        c.run_confusion_matrix("test", verbose=True)
+    if args.eval_all:
+        c.setup_model()
+        for stage in ["test", "train"]:
+            print(f"Evaluating on {stage}")
+            c.do_test(stage)
+    if args.edit:
+        c.load_dataset()
+        c.adjust_bboxes()
 
 #TODO: command line arguments

@@ -29,6 +29,6 @@ class Trainer(DefaultTrainer):
         ))
 
         #build hook for Periodic Writing losses and stuff, each n periods
-        hooks[-1] = PeriodicWriter(self.build_writers(), period=1)
+        hooks[-1] = PeriodicWriter(self.build_writers(), period=20)
 
         return hooks

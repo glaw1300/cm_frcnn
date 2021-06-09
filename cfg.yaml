@@ -1,21 +1,21 @@
 # where to output data
-OUTPUT_DIR: output
+OUTPUT_DIR: new_output
 
 # datasets
 DATASETS:
   TRAIN: ("dimac_train",)
-  TEST: ("dimac_valid",) # test with validate dataset b/c does iterative tests
+  TEST: ("dimac_test",) # test with validate dataset b/c does iterative tests
 
 # training schedule (by defualt has multistep warmup)
 # https://arxiv.org/pdf/1811.08883.pdf
 SOLVER:
-  BASE_LR: .02 # starting learning rate
-  MAX_ITER: 5 # number of epochs
+  BASE_LR: .002 # starting learning rate
+  MAX_ITER: 3000 # number of epochs
   IMS_PER_BATCH: 4
-  #STEPS: (5000, 7500) # decrease lr iteratively
+  STEPS: (1750, 7500) # decrease lr iteratively
 
 TEST:
-  EVAL_PERIOD: 1 # when to run evaluation
+  EVAL_PERIOD: 20 # when to run evaluation
 
 # iteration detals
 MODEL:
