@@ -2,6 +2,111 @@ from functools import wraps
 import inspect
 import numpy as np
 import json
+import os
+import glob
+import tqdm
+import matplotlib.pyplot as plt
+import pandas as pd
+from decimal import Decimal
+
+def load_dimac_dataset(csv_glob, exclude, excel_path, img_dir, labels):
+    # load in boxes from csv and add to img list
+    srcs = {}
+
+    csvs = glob(csv_glob)
+    # read in each annotation in each csv
+    # CSV FORMAT: label,xmin,ymin,box_width,box_height,img_name,img_width,img_height
+    for csv in csvs:
+        with open(csv, "r") as f:
+            line = f.readline().strip("\n")
+            # for each box
+            while line:
+
+                vals = line.split(",")
+                # omit well pads and processing for now
+                if vals[0] in exclude:
+                    line = f.readline().strip("\n")
+                    continue
+
+                # box parameters
+                xmin = float(vals[1])
+                ymin = float(vals[2])
+                xw = float(vals[3])
+                yh = float(vals[4])
+
+                # get source id, group each image by source id
+                src_id = int(vals[5].split("_")[0])
+                if src_id not in srcs:
+                    srcs[src_id] = {}
+
+                # if the image is not already added to the source dict, add it
+                # even tho we reference tmp, it will update srcs (just for conciseness)
+                tmp = srcs[src_id]
+                img_name = vals[5]
+                if img_name not in tmp:
+                    tmp[img_name] = {} # add image info to tmp
+                    # current path to files
+                    tmp[img_name]["file_name"] = os.path.join(img_dir, img_name)
+                    # source_id for later addition of unannotated files
+                    tmp[img_name]["src_id"] = src_id
+                    # mismatch in image sizes in annotatoin, just load in image :(
+                    with Image.open(os.path.join(img_path, img_name)) as i:
+                        img_w, img_h = i.size
+
+                    tmp[img_name]["width"] = img_w#min(864, int(vals[6]))
+                    tmp[img_name]["height"] = img_h#min(864, int(vals[7]))
+                    # image id can just be image name
+                    tmp[img_name]["image_id"] = img_name
+                    tmp[img_name]["annotations"] = []
+
+                # add bounding box
+                tmp[img_name]["annotations"].append({"bbox":[xmin, ymin, xw, yh],
+                                                   "bbox_mode": BoxMode.XYWH_ABS,
+                                                   "category_id": labels[vals[0]]})
+
+                # next line
+                line = f.readline().strip("\n")
+
+    # for each row in the excel sheet (of form file name, use), confirm which images have
+    # annotations and fill in those that don't by selecting another image of same source id
+    use_files = pd.read_excel(excel_path, usecols = [1,2], names=["file", "use"])
+    fnames = use_files[use_files["use"] == "x"]["file"].values
+    final = []
+    for fname in fnames:
+        # extract source id from fname (format ./srcid_date_number.tif.jpeg)
+        src_id = int(fname.split("_")[0].lstrip("./"))
+
+        # check if annotation already exists, add it to final, otherwise take another annotation from same source
+        # if no annotated files, ignore
+        if src_id not in srcs:
+            continue
+
+        img_info = srcs[src_id].get(fname.lstrip("./"), None)
+
+        if not img_info:
+            #create new entry and add to final
+            key, new_img_info = dict(srcs[src_id]).popitem()
+            # duplicate dictionary for modifictation
+            new_img_info = dict(new_img_info)
+            #print(f"building new image for {fname} based off of {key}")
+            # keep annotations, change everything else
+            new_img_info["file_name"] = os.path.join(img_dir, fname.lstrip("./"))
+            # mismatch in image sizes in annotatoin, just load in image :(
+            with Image.open(new_img_info["file_name"]) as i:
+                img_w, img_h = i.size
+
+            new_img_info["width"] = img_w#min(864, int(vals[6]))
+            new_img_info["height"] = img_h#min(864, int(vals[7]))
+            # image id can just be image name
+            new_img_info["image_id"] = fname.lstrip("./")
+            # add to final
+            #print(f"adding {new_img_info} to final")
+            final.append(new_img_info)
+        else:
+            final.append(img_info)
+
+    return np.array(final)
+
 
 def initializer(func):
     """

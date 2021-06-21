@@ -19,6 +19,7 @@ from collections import OrderedDict
 from matplotlib import patches
 from matplotlib.widgets import Slider
 import json
+import copy
 import sys
 #from predictor import Predictor
 
@@ -51,7 +52,7 @@ To specify the location of these files, simply change the constants below this c
 class CNN():
 
     @initializer # wrapper that unpacks each kwarg into self.<variable name>
-    def __init__(self, label_path:str="labels.txt", exclude:list=["well", "processing"], resume:bool=True, config_path:str="cfg.yaml", model_config:str="COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml", splits:dict={"train":.7, "valid":.15, "test":.15}, dataname:str="dimac_", img_path:str="../DIMAC_jpeg/", csv_path:str="exports/csv/", excel_path:str="fnames.xlsx", cross_nms:list=["pumpjack", "tank", "compressor", "flare"], json_path:str="exports"):
+    def __init__(self, label_path:str="labels.txt", exclude:list=["well", "processing"], resume:bool=True, config_path:str="final/cfg.yaml", model_config:str="COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml", splits:dict={"train":.7, "valid":.15, "test":.15}, dataname:str="dimac_", img_path:str="../DIMAC_jpeg/", csv_path:str="exports/csv/", excel_path:str="fnames.xlsx", cross_nms:list=["pumpjack", "tank", "compressor", "flare"], json_path:str="exports"):
         # config
         self._cfg = None
         # label dict of form label:id
@@ -64,7 +65,7 @@ class CNN():
         self._cm = None
 
         # to keep track of modules that need to be loaded
-        self._unloaded = ["dataset", "labels", "cfg", "splits"]
+        self._unloaded = set(("dataset", "labels", "cfg", "splits"))
 
     """
     getter methods
@@ -107,7 +108,7 @@ class CNN():
         if len(self._labels) == 0:
             raise MissingDataError("labels")
 
-        self._unloaded.remove("labels")
+        self._unloaded.discard("labels")
 
 
     def load_cfg(self):
@@ -142,7 +143,7 @@ class CNN():
             cfg.MODEL.ROI_HEADS.NUM_CLASSES = len(self._labels)
 
         self._cfg = cfg
-        self._unloaded.remove("cfg")
+        self._unloaded.discard("cfg")
 
     def load_dataset(self):
         """
@@ -169,7 +170,7 @@ class CNN():
         if self.json_path is not None:
             print("Loading data from JSON")
             self._load_json(["data"])
-            self._unloaded.remove("dataset")
+            self._unloaded.discard("dataset")
             return
 
         csvs = glob(self.csv_path + "*.csv")
@@ -239,13 +240,15 @@ class CNN():
             if src_id not in srcs:
                 continue
 
+            # get this specific file from the source id
             img_info = srcs[src_id].get(fname.lstrip("./"), None)
 
+            # if it doesn't exist, copy existing entry from srcs and insert
             if not img_info:
                 #create new entry and add to final
                 key, new_img_info = dict(srcs[src_id]).popitem()
                 # duplicate dictionary for modifictation
-                new_img_info = dict(new_img_info)
+                new_img_info = copy.deepcopy(new_img_info)
                 #print(f"building new image for {fname} based off of {key}")
                 # keep annotations, change everything else
                 new_img_info["file_name"] = self.img_path + fname.lstrip("./")
@@ -267,7 +270,7 @@ class CNN():
             raise MissingDataError("dataset")
 
         self._data = np.array(final)
-        self._unloaded.remove("dataset")
+        self._unloaded.discard("dataset")
 
 
     def load_splits(self):
@@ -275,7 +278,7 @@ class CNN():
         if self.json_path is not None:
             print("Loading splits from JSON")
             self._load_json(self.splits.keys())
-            self._unloaded.remove("splits")
+            self._unloaded.discard("splits")
             return
 
         # make sure splits make sense
@@ -285,6 +288,12 @@ class CNN():
             print("Loading dataset")
             self.load_dataset()
 
+        self._make_splits()
+
+        self._unloaded.discard("splits")
+
+    def _make_splits(self):
+        self._assert_loaded("dataset")
         # iterate over split_name, portion pairs
         splts = []
         cursplt = 0
@@ -296,7 +305,7 @@ class CNN():
         for chunk, stage in zip(np.split(self._data, splts[:-1]), self.splits.keys()):
             self._splits_data[stage] = chunk
 
-        self._unloaded.remove("splits")
+        self._unloaded.discard("splits")
 
     def _load_json(self, srcs):
         # load each source
@@ -349,21 +358,37 @@ class CNN():
 
         return True
 
-    def save_dataset(self, path=None):
+    def save_dataset(self, path=None, add=True):
         self._assert_loaded("dataset")
-        #TODO: this is gross
-        path = path or self.json_path or "./"
-        self._save_json_list(self._data, os.path.join(path, "data.json"))
+        # priority: path parameter, cfg output_dir, exports
+        if not path and "cfg" in self._unloaded:
+            path = "exports"
+        elif not path and "cfg" not in self._unloaded:
+            path = self._cfg.OUTPUT_DIR
 
-    def save_splits(self, path=None):
+        os.makedirs(path, exist_ok=True)
+
+        self._save_json_list(self._data, os.path.join(path, "data.json"), add=add)
+
+    def save_splits(self, path=None, add=True):
         self._assert_loaded("splits")
-        #TODO: this is gross, make outputdir attr
-        path = path or self.json_path or "./"
-        for key in self.splits.keys():
-            self._save_json_list(self._splits_data[key], os.path.join(path, key+".json"))
+        # priority: path parameter, cfg output_dir, exports
+        if not path and "cfg" in self._unloaded:
+            path = "exports"
+        elif not path and "cfg" not in self._unloaded:
+            path = self._cfg.OUTPUT_DIR
+        os.makedirs(path, exist_ok=True)
 
-    def _save_json_list(self, data, file):
-        with open(file, "w") as f:
+        for key in self.splits.keys():
+            self._save_json_list(self._splits_data[key], os.path.join(path, key+".json"), add=add)
+
+    def _save_json_list(self, data, file, add=True):
+        if add:
+            mode = "a+"
+        else:
+            mode = "w"
+
+        with open(file, mode) as f:
             for l in data:
                 json.dump(l, f)
                 f.write("\n")
@@ -428,7 +453,15 @@ class CNN():
         cv2.destroyWindow(d["file_name"] + " predicted")
         cv2.destroyWindow(d["file_name"] + " truth")
 
-    def predict_image(self, img, view=True, metadata=None, fname=""):
+    def predict_image(self, img, view=True, metadata="train", fname="", threshold=.75):
+        self._cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = threshold
+
+        # try to get metadata
+        try:
+            metadata = MetadataCatalog.get(self.dataname + metadata)
+        except:
+            metadata = None
+
         # assert modules loaded
         self._assert_loaded("cfg")
 
@@ -438,11 +471,13 @@ class CNN():
         v = Visualizer(img[:,:,::-1], scale=0.5, metadata=metadata, instance_mode=ColorMode.SEGMENTATION)
         out = v.draw_instance_predictions(preds["instances"].to("cpu"))
 
-        cv2.imshow(fname + " predicted", out.get_image()[:,:,::-1])
         print(f"Made {len(preds['instances'])} predictions for {fname}")
-        print("Press any key to clear window")
-        cv2.waitKey(0)
-        cv2.destroyWindow(fname + " predicted")
+
+        if view:
+            print("Press any key to clear window")
+            cv2.imshow(fname + " predicted", out.get_image()[:,:,::-1])
+            cv2.waitKey(0)
+            cv2.destroyWindow(fname + " predicted")
 
         return preds
 
@@ -569,7 +604,7 @@ class CNN():
         fig1.savefig(self._cfg.OUTPUT_DIR+"/cm_normalized.png", dpi=100)
         plt.show()
 
-    def adjust_bboxes(self, verbose=True, data="dataset", save=False):
+    def adjust_bboxes(self, verbose=True, data="dataset", save=False, add=True):
         """
         Overwrites self._data by default, can specify which split
         """
@@ -616,9 +651,10 @@ class CNN():
             for r, coords in zip(rects, og_coords):
                 r.set_x(x_slider.val + coords[0])
 
-        for d in dataset[:3]:
+        for i in tqdm(range(len(dataset))):
             # setup subplots
             fig, ax = plt.subplots()
+            fig.set_size_inches(8, 8)
             fig.subplots_adjust(left=0.25, bottom=0.25)
 
             # add sliders
@@ -636,7 +672,7 @@ class CNN():
             # make all rectangles
             rects = []
             og_coords = []
-            for annot in d["annotations"]:
+            for annot in dataset[i]["annotations"]:
                 x, y, w, h = annot["bbox"]
                 rects.append(patches.Rectangle((x,y),w,h, edgecolor='r', facecolor="none"))
                 og_coords.append((x,y))
@@ -645,11 +681,12 @@ class CNN():
             for r in rects:
                 ax.add_patch(r)
 
-            i = plt.imread(d["file_name"])
-            ax.imshow(i)
+            im = plt.imread(dataset[i]["file_name"])
+            ax.imshow(im)
 
             fig.canvas.mpl_connect('key_press_event', _on_press)
             print("Press (q) to close")
+            plt.title(dataset[i]["file_name"])
             plt.show()
 
             # show final changes if verbose
@@ -658,17 +695,22 @@ class CNN():
                     print(f"x,y: {xy[0]},{xy[1]} ---> {r.get_x()},{r.get_y()}")
 
             # update dataset
-            for i, r in enumerate(rects):
-                d["annotations"][i]["bbox"][0] = r.get_x()
-                d["annotations"][i]["bbox"][1] = r.get_y()
+            for j, r in enumerate(rects):
+                if data == "dataset":
+                    self._data[i]["annotations"][j]["bbox"][0] = r.get_x()
+                    self._data[i]["annotations"][j]["bbox"][1] = r.get_y()
+                else:
+                    self._splits_data[data][i]["annotations"][j]["bbox"][0] = r.get_x()
+                    self._splits_data[data][i]["annotations"][j]["bbox"][1] = r.get_y()
+
+        # if modified data, modify splits
+        if data == "dataset":
+            self._make_splits()
 
         # if save datasets, save datasets
         if save:
-            if data == "dataset":
-                self.save_dataset()
-            else:
-                #TODO: probably should just save one
-                self.save_splits()
+            self.save_dataset(add=add)
+            self.save_splits(add=add)#TODO should probably jsut save one
 
 
 parser = argparse.ArgumentParser()
@@ -684,8 +726,8 @@ if __name__ == "__main__":
     c = CNN()
     #print(DatasetCatalog.get("dimac_train"))
     if args.predict:
-        c.load_cfg()
-        print(c.predict_image(cv2.imread(args.predict)))
+        c.setup_model()
+        print(c.predict_image(cv2.imread(args.predict), fname=args.predict))
     if args.visualize:
         c.setup_model()
         c.view_random_sample(args.visualize, "train")
@@ -694,7 +736,8 @@ if __name__ == "__main__":
         c.train_model()
     if args.confusion:
         c.setup_model()
-        c.run_confusion_matrix("test", verbose=True)
+        #c.run_confusion_matrix("test", verbose=True)
+        c.run_confusion_matrix("valid", verbose=True)
     if args.eval_all:
         c.setup_model()
         for stage in ["test", "train"]:

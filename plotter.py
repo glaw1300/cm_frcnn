@@ -6,18 +6,27 @@ from utils import load_json_arr
 import os
 
 def plot_val_with_total_loss(output_dir):
-    plt.figure()
-
     metrics = load_json_arr(os.path.join(output_dir, "metrics.json"))
+    tot = []
+    val = []
+    iters = []
+    for line in metrics:
+        if "validation_loss" in line and "total_loss" in line and "iteration" in line:
+            tot.append(line["total_loss"])
+            val.append(line["validation_loss"])
+            iters.append(line["iteration"])
 
-    plt.plot(
-        [x['iteration'] for x in metrics],
-        [x['total_loss'] for x in metrics])
-    plt.plot(
-        [x['iteration'] for x in metrics if 'validation_loss' in x],
-        [x['validation_loss'] for x in metrics if 'validation_loss' in x])
-    plt.legend(['total_loss', 'validation_loss'], loc='upper left')
-    plt.show()
+    plt.figure(999)
+    plt.clf()
+
+    plt.plot(iters, tot, "r-", label="total loss")
+    plt.plot(iters, val, "b-", label="val loss")
+    plt.title(f"Total and Validation Loss epochs {min(iters)} to {max(iters)}")
+    plt.legend()
+
+    plt.savefig(os.path.join(output_dir, "val_v_tot_loss.png"), dpi=100)
+
+    plt.show(block=False)
 
 # From https://matplotlib.org/stable/gallery/images_contours_and_fields/image_annotated_heatmap.html
 def heatmap(data, row_labels, col_labels, ax=None, xlabel="Detections", ylabel="Ground Truth",
