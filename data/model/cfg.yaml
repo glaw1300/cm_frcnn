@@ -1,0 +1,33 @@
+# where to output data
+MODEL_CFG: COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml
+
+OUTPUT_DIR: output
+
+# datasets
+DATASETS:
+  TRAIN: ("dimac_train",)
+  TEST: ("dimac_test",) # test with validate dataset b/c does iterative tests
+
+# training schedule (by defualt has multistep warmup)
+# https://arxiv.org/pdf/1811.08883.pdf
+SOLVER:
+  BASE_LR: .002 # starting learning rate
+  MAX_ITER: 5000 # number of epochs
+  IMS_PER_BATCH: 4
+  STEPS: (3500, 4250) # decrease lr iteratively
+
+TEST:
+  EVAL_PERIOD: 20 # when to run evaluation
+
+# iteration detals
+MODEL:
+  ROI_HEADS:
+      BATCH_SIZE_PER_IMAGE: 128
+      SCORE_THRESH_TEST: .5 # threshold for score
+  DEVICE: cpu # device to run on
+  WEIGHTS: detectron2://ImageNetPretrained/MSRA/R-50.pkl
+
+DATALOADER:
+    NUM_WORKERS: 0 # number of cores
+
+VERSION: 2
