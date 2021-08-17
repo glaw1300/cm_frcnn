@@ -32,17 +32,13 @@ from detectron2.evaluation import COCOEvaluator, inference_on_dataset, print_csv
 from detectron2.modeling import build_model
 
 """
-General running information:
-- To run this code you need the following files:
-    labels.txt - list of all categories for data
-    [directory] images - directory of all of your training/test images
-    csv(s) - annotation csvs of form label,xmin,ymin,box_width,box_height,img_name,img_width,img_height
-    excel spreadsheet - two columns, filename and files to use (denoted with an "x")
-
-To specify the location of these files, simply change the constants below this comment
+See README.md for running instructions. Easiest to run with main.py
 """
 
 class CNN():
+    """
+    Implementation of Detectron2's Faster-RCNN for oil and gas infrastructure detection in the Permian Basin
+    """
     dataloader = DataLoader
     predictor = Predictor
     evaluator = CustomCOCOEvaluator
@@ -60,25 +56,42 @@ class CNN():
     getter methods
     """
     def get_dataset(self):
+        """
+        see DataLoader get_dataset
+        """
         return self.dl.get_dataset()
 
     def get_labels(self):
+        """
+        see DataLoader get_labels
+        """
         return self.dl.get_labels()
 
     def get_splits(self):
+        """
+        see DataLoader get_splits
+        """
         return self.dl.get_splits()
 
     def get_cfg(self):
+        """
+        see DataLoader get_cfg
+        """
         return self.dl.get_cfg()
 
     def get_confusion_matrix(self):
+        """
+        get confusion matrix. If run_confusion_matrix has not been run, will throw a MissingDataError.
+        """
         if self._cm == None:
             raise MissingDataError(src="confusion matrix", message="Confusion matrix has not been run, call 'run_confusion matrix()' to get: ")
         return self._cm
 
     def setup_model(self):
         """
-        wrapper for load dataset, labels, and config
+        wrapper for DataLoader's load_all_data and register_datasets. Once run, model will be equipped for all evaluation, training and inference
+
+        returns True if successful
         """
         # load all data with dataloader
         logging.log(logging.INFO, "Loading in annotations, config with DataLoader")
@@ -93,7 +106,13 @@ class CNN():
     model related methods (training, testing)
     """
     def train_model(self, plot=False, resume=True):
+        """
+        Train model on parameters in cfg.yaml
 
+        If plot, plot validation and total loss at end of run
+
+        If resume, resume training from given model weights
+        """
         trainer = Trainer(self.dl._cfg)
         trainer.resume_or_load(resume=resume)
         trainer.train()
@@ -103,7 +122,9 @@ class CNN():
 
     def view_random_sample(self, n, stage, predict=False, threshold=None):
         """
-        n: number of images t oview
+        View a random sample of a dataset stage (train, test, valid) to confirm annotations were laoded properly
+
+        n: int, number of images to view
         stage: which group to view from (train, test, valid)
         predict: make a prediction on the randomly selected images
         threshold: prediction threshold, will overwrite default
@@ -121,8 +142,15 @@ class CNN():
 
 
     def view_data_entry(self, d, predict=False, metadata=None):
-        # assert modules loaded
+        """
+        Mostly internal method for view_random_sample
 
+        d: dict from self._data
+        predict: bool, if true will use loaded network to predict on image
+        metadata: if you want the bounding boxes to have labels, you must pass one of the loaded metadatas (MetadataCatalog.get(dataname + split name, any split should work)
+
+        Take an entry from list self._data and view it and visualize the bounding boxes
+        """
         # show image
         img = cv2.imread(d["file_name"])
         v_d = Visualizer(img[:, :, ::-1], scale=0.5, metadata=metadata, instance_mode=ColorMode.SEGMENTATION)
@@ -138,7 +166,21 @@ class CNN():
         cv2.destroyWindow(d["file_name"] + " predicted")
         cv2.destroyWindow(d["file_name"] + " truth")
 
-    def predict_image(self, img, view=True, metadata="train", fname="", threshold=.25, verbose=False, crop=False, cent=None):
+    def predict_image(self, img, view=True, fname="", threshold=.25, verbose=False, crop=False, cent=None, title=""):
+        """
+        Make prediction on image with CNN
+
+        img: return of cv2.imread (np.array), loaded in image to predict on
+        view: bool, visualize prediction
+        fname: str, optional, for image title and printing
+        verbose: log number of predictions
+        threshold: float 0-1, score threshold for predictions *note* will permanently change instance config
+        crop: bool, each image in the CNN gets resized down to 800x800 and the CNN is trained on 864 or 832 px squares, so crop will take an 864 x 864 center of image to predict on (be wary of new data sizes!!)
+        cent: center of crop to select (e.g. the pix coords of a plume), if None will take center of image
+        title: str, title to be used for plotting predictions
+
+        returns: Detectron2 prediction
+        """
         # if crop, take 864 x 864 center of image
         if crop:
             if cent:
@@ -152,29 +194,31 @@ class CNN():
 
         self.dl._cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = threshold
 
-        # try to get metadata
-        try:
-            metadata = MetadataCatalog.get(self.dl.dataname + metadata)
-        except:
-            metadata = None
-
         p = self.predictor(self.dl._cfg)
         preds = p(img)
-
-        v = Visualizer(img[:,:,::-1], scale=0.5, metadata=metadata, instance_mode=ColorMode.SEGMENTATION)
-        out = v.draw_instance_predictions(preds["instances"].to("cpu"))
 
         if verbose:
             logging.log(logging.INFO, f"Made {len(preds['instances'])} predictions for {fname}")
 
         if view:
-            plotter.plot_pred_boxes(img, preds, self.dl._labels)
+            plotter.plot_pred_boxes(img, preds, self.dl._labels, title=title)
 
         return preds
 
     def run_confusion_matrix(self, stage, nms_thresh=.25, threshold=None, iou_threshold=.35, plot=True, verbose=False, hypervisualize=False, slices=None):
         """
-        if hypervisualize is True, verbose is automatically true
+        Run inference on a given split to generate confusion matrix of results
+
+        stage: str, one of splits (train, test, valid) to run confusion matrix on
+        nms_thresh: float 0-1, non-maximum suppression maximum threshold (IOU < nms_thresh between 2 predictions of same class will result in only one prediction being accepted)
+        threshold: float 0-1, custom score threshold to accept prediction, *note* will change the config permanently for this instance
+        iou_threshold: float 0-1, IOU threshold between prediction and ground truth for accepting prediction as true
+        plot: bool, if true plot confusion matrix after run (otherwise will just pretty print)
+        hypervisualize: bool, not recommended, will show each prediction, window must be closed before next prediction is made
+        verbose: bool, if true, print confusion matrix for each image
+        slices: tuple, (beginning index, end index), slice of the dataset to run confusion matrix on
+
+        returns: len(labels) x len(labels) np.array confusion matrix
         """
 
         # default to .5, decrease in our case because overlappign infrastructure won't happen
@@ -193,7 +237,7 @@ class CNN():
         # get data
         dataset = self.dl._splits_data[stage]
         if slices:
-            dataset = dataset[slices]
+            dataset = dataset[slices[0]:slices[1]]
 
         # get metadata
         metadata = MetadataCatalog.get(self.dl.dataname + stage)
@@ -235,9 +279,16 @@ class CNN():
         pprint_cm(cm, row_labels, col_labels)
 
         # total number of predictions is all items except the last column b/c is missed detection
-        return cm, cm[:, :-1].sum()
+        return cm
 
     def do_test(self, stage):
+        """
+        stage: str, dataset (train, test) from cfg.yaml to do test on
+
+        do inference with self.evaluator to evaluate performance of CNN @ specific IOU
+
+        returns results array
+        """
 
         datasets = {
                     "test" : self.dl._cfg.DATASETS.TEST,
@@ -269,6 +320,14 @@ class CNN():
     plotting tools (with plotter.py)
     """
     def plot_confusion_matrix(self, iou, row=[], col=[]):
+        """
+        Wrapper for plotting confusion matrix with plotter.py
+
+        plots heatmap of self._cm totals and percentages
+
+        iou: float: 0-1, iou used for run_confusion_matrix
+        row, col: list, row and column labels
+        """
 
         fig, ax = plt.subplots()
         im, cbar = plotter.heatmap(self._cm, row, col, ax=ax, cmap="YlOrRd", title=f"Confusion matrix total, IOU={iou}")

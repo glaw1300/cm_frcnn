@@ -78,7 +78,7 @@ if args.train:
 if args.confusion:
     c.run_confusion_matrix("test", verbose=True)
 if args.predict:
-    print(c.predict_image(cv2.imread(args.predict), fname=args.predict))
+    print(c.predict_image(cv2.imread(args.predict), fname=args.predict, title=args.predict))
 if args.visualize:
     c.view_random_sample(args.visualize, "train")
 if args.eval_all:

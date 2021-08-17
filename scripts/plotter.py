@@ -12,7 +12,15 @@ COLORS = ['blue', 'orange', 'green', 'yellow', 'red', 'purple', 'pink', 'cyan', 
 # from https://matplotlib.org/3.1.1/users/event_handling.html#draggable-rectangle-exercise
 # merge draggable rectangle with arrow key shifts
 class DraggableRectangle:
+    """
+    Rectangle that can be dragged around with cursor on matplotlib.figure
+    Used for adjusting the bounding boxes (could also be made scalable by the vertices)
+    """
     def __init__(self, rect, fig):
+        """
+        rect: matplotlib.patches.Rectangle
+        fig: plt.figure that the rectangle is plotted on
+        """
         self.rect = rect
         self.press = None
         self.fig = fig
@@ -62,9 +70,20 @@ class DraggableRectangle:
         self.fig.canvas.mpl_disconnect(self.cidrelease)
         self.fig.canvas.mpl_disconnect(self.cidmotion)
 
-def plot_pred_boxes(img, preds, labels, colors = COLORS, block=True, show=True, crop=False, cent = None):
+def plot_pred_boxes(img, preds, labels, colors = COLORS, block=True, show=True, crop=False, cent = None, title = ""):
     """
-    preds: x1, y1, x2, y2
+    img: np.array loaded in by cv2.imread
+    preds: Detectron2 Predictor output (can be faked with utils.TmpPrediction)
+        - method unpacks prediction to get .pred_boxes, .pred_classes, and .scores from preds["instances"]
+    labels: list, annotation labels that match up with CNN classes
+    colors: list, list of colors to use for each class
+    block: bool, argument for plt.show(block=block)
+    show: bool, if show, show image with predictions
+    crop: bool, if crop, crop image to 864 x 864 box (to be used if predict_image also uses crop)
+    cent: tuple, (x, y) pixel center of crop
+    title: str, title of Figure
+
+    returns fig, ax that were plotted on
     """
     assert len(colors) >= len(labels), "Not enough colors to map to labels"
 
@@ -105,6 +124,7 @@ def plot_pred_boxes(img, preds, labels, colors = COLORS, block=True, show=True, 
         labeled.add(l)
 
     # legend
+    plt.title(title)
     plt.legend()
     plt.axis('off')
     if show:
@@ -113,6 +133,9 @@ def plot_pred_boxes(img, preds, labels, colors = COLORS, block=True, show=True, 
 
 
 def plot_val_with_total_loss(output_dir):
+    """
+    given output directory of CNN, load in metrics.json and plot validation loss with total loss
+    """
     metrics = load_json_arr(os.path.join(output_dir, "metrics.json"))
     tot = []
     val = []

@@ -59,21 +59,53 @@ class DataLoader:
     getter methods
     """
     def get_dataset(self):
+        """
+        Get loaded in dataset
+
+        returns: list[dict]
+            dict: file_name, height, width, image_id, annotations
+        """
         return self._data
 
     def get_labels(self):
+        """
+        Get list of labels
+
+        returns: list
+        """
         return self._labels
 
     def get_splits(self):
+        """
+        Get the dataset divided into splits from __init__
+
+        returns: list[dict[dict]]
+            dict keys: splits
+            dict values: dict in same format as dataset
+        """
         return self._splits_data
 
     def get_cfg(self):
+        """
+        Get loaded in config object
+
+        returns detectron2.config.config.CfgNode
+        """
         return self._cfg
 
     """
     loader methods
     """
     def load_labels(self):
+        """
+        Load in labels from labels.txt
+
+        File must have one label on each line
+
+        File must be located in data_dir/annotation_dir/labels_fname
+
+        returns: None
+        """
         # open label file
         with open(self.labels_path, "r") as f:
             # load labels as list
@@ -87,6 +119,15 @@ class DataLoader:
             raise MissingDataError("labels")
 
     def load_cfg(self):
+        """
+        Load in Detectron2 model config yaml file
+
+        config file must have MODEL_CFG item that is the default Detectron2 model to use (see https://github.com/facebookresearch/detectron2/blob/master/MODEL_ZOO.md)
+
+        Config file is located at data_dir / model_dir / cfg_fname
+
+        returns: None
+        """
         # if no labels, raise error
         # if no labels, raise error
         if len(self._labels) == 0:
@@ -133,7 +174,7 @@ class DataLoader:
             - bbox_mode int (structures.BoxMode)
             - category_id
 
-        default treats data file as pickle file
+        default treats data file as pickle file, is overwritten in utils.py
         """
         # labels must be loaded to load dataset
         if len(self._labels) == 0:
@@ -152,6 +193,11 @@ class DataLoader:
 
 
     def load_splits(self):
+        """
+        If has_json attribute, it will load the splits from json_files in the data_dir / annotations_dir directory with the same name as the splits (e.g. train.json)
+
+        Otherwise, by default, the splits are made using the _make_splits method, which is overwritten in utils.py
+        """
         # if resuming with json data, do that
         if self.has_json:
             logging.log(logging.INFO, "Loading splits from JSON")
@@ -168,6 +214,11 @@ class DataLoader:
         self._make_splits()
 
     def load_all_data(self):
+        """
+        Wrapper method for other loading methods; sequentially loads labels, data, makes the splits, and then loads in the config
+
+        Used by faster_rcnn.py's CNN class to load all relevant data in setup_model()
+        """
         # load in labels
         if len(self._labels) == 0:
             self.load_labels()
@@ -185,6 +236,12 @@ class DataLoader:
             self.load_cfg()
 
     def register_datasets(self):
+        """
+        Register each of the splits with Detectron2's DatasetCatalog and MetadataCatalog. Requires labels and splits to be loaded. Trying to reregister a dataset by the same name (i.e. calling this method twice) will result in an error.
+
+        DatasetCatalog: stores dataset under self.dataname + split name for use in model training and evaluations
+        MetadataCatalog: stores model classes for converting model output to classes
+        """
         # ensure have labels and splits
         if len(self._labels) == 0:
             logging.log(logging.INFO, "Loading labels")
@@ -205,6 +262,12 @@ class DataLoader:
     Additional helper methods for loading JSON data
     """
     def _load_json(self, srcs):
+        """
+        srcs: list, list of source names to load in json file
+            ex: srcs=["data"] loads in data.json from data_dir / annotation_dir into self._data
+
+        hidden method for loading in data
+        """
         # load each source
         for src in srcs:
             # get list for storage
@@ -228,6 +291,13 @@ class DataLoader:
                     l.append(js)
 
     def _make_splits(self):
+        """
+        Hidden method for making splits from self._data
+
+        By default, it uses np.split to make splits on self._data list in accordance with splits __init__ parameter
+
+        Overwritten in utils.py to split by source id
+        """
         # iterate over split_name, portion pairs
         splts = []
         cursplt = 0
@@ -239,31 +309,10 @@ class DataLoader:
         for chunk, stage in zip(np.split(self._data, splts[:-1]), self.splits.keys()):
             self._splits_data[stage] = chunk
 
-    def _load_json(self, srcs):
-        # load each source
-        for src in srcs:
-            # get list for storage
-            if src == "data":
-                l = self._data
-            else:
-                l = self._splits_data[src]
-
-            # load data
-            with open(os.path.join(self.annotation_path, src+".json"), "r") as f:
-                for line in f:
-                    js = json.loads(line.strip())
-                    # map annotations to id, keep all not in exclude
-                    fin_annot = []
-                    for annot in js["annotations"]:
-                        # also make sure the annotation is in labels
-                        if annot["category_id"] in self._labels:
-                            annot["category_id"] = self._labels.index(annot["category_id"])
-                            fin_annot.append(annot)
-                    js["annotations"] = fin_annot
-                    l.append(js)
-
-
     def _assert_loaded(self, src, src_name):
+        """
+        Internal assertion management to throw error if method that needs specific data to be loaded and isn't apart of the loading chain (everything covered by load_all_data) is not loaded
+        """
         assert type(src) != type(None) and len(src) != 0, f"{src_name} not loaded, run 'load_{src_name}()' to load"
 
     """
@@ -272,7 +321,15 @@ class DataLoader:
 
     def adjust_bboxes(self, verbose=True, data="dataset", save=False, add=True):
         """
-        Overwrites self._data by default, can specify which split
+        Iterate over a dataset (by default main dataset, can do individual splits) and displays bounding boxes on interactive matplotlib GUI. These can be shifted and dragged to customize their position on the image. This is for dataset cleaning after initial labelling
+
+        data: dataset or one of splits
+
+        If save: save the adjusted bounding boxes to json file. Json file will be at data_dir / annotation_dir / <data>.json
+
+        If add: add to existing json file at end.
+
+        If verbose: print changes
         """
         self._assert_loaded(self._data, "dataset")
 
@@ -381,10 +438,13 @@ class DataLoader:
             self.save_splits(add=add)#TODO should probably jsut save one
 
     def save_dataset(self, path=None, add=True):
+        """
+        Save dataset as json. If path, save to path. Otherwise, save to data_dir / annotation_dir / data.json. If add, add dataset to end of data.json file
+        """
         self._assert_loaded(self._data, "dataset")
         # if not path, do DataLoader data_dir
         if not path:
-            path = self.dl.data_dir
+            path = self.annotation_path
 
         os.makedirs(path, exist_ok=True)
 
@@ -392,11 +452,14 @@ class DataLoader:
         self._save_json_list(self._data, os.path.join(path, "data.json"), add=add, sub_annots=True)
 
     def save_splits(self, path=None, add=True):
+        """
+        Same as save_dataset but for all splits
+        """
         self._assert_loaded(list(self._splits_data.values())[0], "splits")
         # priority: path parameter, cfg output_dir, exports
         # if not path, do DataLoader data_dir
         if not path:
-            path = self.dl.data_dir
+            path = self.annotation_path
 
         os.makedirs(path, exist_ok=True)
 
@@ -405,6 +468,14 @@ class DataLoader:
             self._save_json_list(self._splits_data[key], os.path.join(path, key+".json"), add=add, sub_annots=True)
 
     def _save_json_list(self, data, file, add=True, sub_annots=False):
+        """
+        Internal method for saving a list of dictionaries as jsons
+
+        data: list[dict]
+        file: path to file to write to
+        add: bool, if add mode is a+, else w
+        sub_annots: bool, if true, replace category_id in annotation with label name (so each annotation has a class name in it instead of int)
+        """
         # either overwrite file or add to it
         if add:
             mode = "a+"
@@ -421,7 +492,6 @@ class DataLoader:
                         annot["category_id"] = self._labels[annot["category_id"]]
                 json.dump(l, f)
                 f.write("\n")
-
 
 if __name__ == '__main__':
     dl = DataLoader()
